@@ -1,0 +1,8 @@
+{
+  "name": "capstone_badge_admin",
+  "displayName": "Badge rules admin",
+  "description": "Capstone app: Badge Rules admin editor.",
+  "platform": "web",
+  "id": "capstone_badge_admin",
+  "version": "1.0.0"
+}

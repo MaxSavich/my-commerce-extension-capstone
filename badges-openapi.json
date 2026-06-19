@@ -1,0 +1,58 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Product Badges API",
+        "version": "1.0.0",
+        "description": "Merchant-configurable badge state via I/O Runtime"
+    },
+    "servers": [
+        {
+            "url": "https://3967933-471blackyak-stage.adobeioruntime.net/api/v1/web/capstone-badge"
+        }
+    ],
+    "paths": {
+        "/get-badges": {
+            "get": {
+                "operationId": "getProductBadges",
+                "summary": "Get badge state for a SKU",
+                "parameters": [
+                    {
+                        "name": "sku",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "The product SKU"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Badge state for the SKU",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sku": {
+                                            "type": "string"
+                                        },
+                                        "badges": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "updatedAt": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
