@@ -26,28 +26,9 @@ module.exports = defineConfig({
       ],
     },
   },
-  // Event-driven badge recompute: when a product is saved in Commerce, the
-  // badge-event-consumer recomputes that SKU's badges (calls compute-badges).
-  eventing: {
-    commerce: [
-      {
-        provider: {
-          label: 'Capstone Badge Events',
-          description: 'Product save events for badge recomputation',
-          key: 'capstone-badge-events',
-        },
-        events: [
-          {
-            name: 'observer.catalog_product_save_after',
-            label: 'Product saved (badge recompute)',
-            description: 'Recompute product badges whenever a product is saved.',
-            fields: [
-              { name: 'sku' },
-            ],
-            runtimeActions: ['capstone-badge/badge-event-consumer'],
-          },
-        ],
-      },
-    ],
-  },
+  // Event-driven badge recompute is wired via an I/O Events registration created
+  // in the Developer Console (Commerce Events wizard) on provider
+  // "Commerce-Event-Provider-MS1_Label", delivering observer.catalog_product_save_after
+  // to capstone-badge/badge-event-consumer. (No declarative `eventing` block here:
+  // the registration is managed in Console, per course Activity 4-1.)
 });
