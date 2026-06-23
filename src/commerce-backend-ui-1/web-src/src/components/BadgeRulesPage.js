@@ -75,7 +75,7 @@ function clientValidate(badgeList) {
   return errors;
 }
 
-// ---- Sub-component: type-specific fields ----
+// ---- Sub-component: type-specific fields (returns a field that joins the main row) ----
 function TypeFields({ badge, onChange }) {
   const u = (field, val) => onChange({ ...badge, [field]: val });
 
@@ -90,19 +90,6 @@ function TypeFields({ badge, onChange }) {
       />
     );
   }
-  if (badge.type === 'bestseller') {
-    return <SkuField badge={badge} onChange={onChange} />;
-  }
-  if (badge.type === 'limited') {
-    return (
-      <Checkbox
-        isSelected={badge.requireDateWindow}
-        onChange={(v) => u('requireDateWindow', v)}
-      >
-        Require active special-price date window
-      </Checkbox>
-    );
-  }
   if (badge.type === 'lowstock') {
     return (
       <NumberField
@@ -112,6 +99,21 @@ function TypeFields({ badge, onChange }) {
         onChange={(v) => u('threshold', v)}
         width="size-1600"
       />
+    );
+  }
+  if (badge.type === 'limited') {
+    return (
+      <View>
+        <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>Date window</Text>
+        <View marginTop="size-100">
+          <Checkbox
+            isSelected={badge.requireDateWindow}
+            onChange={(v) => u('requireDateWindow', v)}
+          >
+            Require active special price
+          </Checkbox>
+        </View>
+      </View>
     );
   }
   return null;
@@ -134,7 +136,7 @@ function SkuField({ badge, onChange }) {
   };
 
   return (
-    <View>
+    <View marginTop="size-200">
       <Flex gap="size-200" alignItems="end">
         <TextField
           label="Add Best Seller SKU"
@@ -147,7 +149,7 @@ function SkuField({ badge, onChange }) {
       </Flex>
       <View marginTop="size-100">
         {(!badge.skus || badge.skus.length === 0) ? (
-          <Text>No SKUs configured.</Text>
+          <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>No SKUs configured.</Text>
         ) : (
           <TagGroup
             aria-label="Best seller SKUs"
@@ -168,8 +170,9 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
 
   return (
     <Well marginBottom="size-200">
-      <Flex gap="size-200" alignItems="center" marginBottom="size-200">
-        <Flex direction="column" gap="size-50">
+      {/* alignItems=start so the reorder arrows pin to the top, not float to vertical center */}
+      <Flex gap="size-200" alignItems="start">
+        <Flex direction="column" gap="size-50" marginTop="size-100">
           <ActionButton
             aria-label="Move up"
             isDisabled={index === 0}
@@ -185,9 +188,11 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
         </Flex>
 
         <View flex>
+          {/* Title row */}
           <Flex alignItems="center" gap="size-200" marginBottom="size-200">
             <Heading level={4} flex margin={0}>
-              {badge.label || '(no label)'} <Text UNSAFE_style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>— {typeName}</Text>
+              {badge.label || '(no label)'}{' '}
+              <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e', fontWeight: 'normal' }}>— {typeName}</Text>
             </Heading>
             <Switch
               isSelected={badge.enabled}
@@ -197,7 +202,10 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
             </Switch>
           </Flex>
 
-          <Flex gap="size-300" wrap alignItems="end" marginBottom="size-200">
+          {/* Field row: one grid, all fields share the same top baseline (alignItems=start).
+              The Style field's description hangs BELOW its input, so it no longer pushes
+              the other inputs down. Type-specific field joins the same row. */}
+          <Flex gap="size-300" wrap alignItems="start">
             <TextField
               label="Label"
               value={badge.label}
@@ -208,7 +216,7 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
               label="Style (CSS class)"
               value={badge.style}
               onChange={(v) => onChange({ ...badge, style: v })}
-              description="Full CSS class name — add matching rule to product-badges.css"
+              description="Full CSS class — add a matching rule to product-badges.css"
               width="size-2400"
             />
             <NumberField
@@ -218,13 +226,15 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
               onChange={(v) => onChange({ ...badge, ttlDays: v })}
               width="size-1600"
             />
+            <TypeFields badge={badge} onChange={onChange} />
           </Flex>
 
-          <TypeFields badge={badge} onChange={onChange} />
+          {/* Best-seller SKU manager is wider, so it gets its own row below */}
+          {badge.type === 'bestseller' && <SkuField badge={badge} onChange={onChange} />}
         </View>
 
         <DialogTrigger>
-          <ActionButton aria-label="Delete badge" isQuiet UNSAFE_style={{ color: '#c00' }}>✕</ActionButton>
+          <ActionButton aria-label="Delete badge" isQuiet marginTop="size-100" UNSAFE_style={{ color: '#c00' }}>✕</ActionButton>
           {(close) => (
             <Dialog>
               <Header><Heading>Delete badge</Heading></Header>
