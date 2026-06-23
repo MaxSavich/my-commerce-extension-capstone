@@ -5,20 +5,18 @@ const { migrateRules, validateRules } = require('../lib/rules');
 // ---------------------------------------------------------------------------
 // Capstone: save-rules  (WRITE)
 // Validates an incoming badge-rules payload and, if valid, persists it to
-// I/O State key `badge-rules`. Validation happens HERE (authoritative,
-// server-side) -- there is no separate validate action.
+// I/O State key `badge-rules`.
 //
-// AUTH: this is a WRITE action -> require-adobe-auth is TRUE in ext.config.yaml.
-// The Adobe platform validates the merchant's IMS token (sent by the Admin UI
-// as `Authorization: Bearer <imsToken>` + `x-gw-ims-org-id`) BEFORE this code
-// runs; an unauthenticated call never reaches here (401 at the platform layer).
-// No in-code token check is needed -- the annotation is the security boundary.
+// AUTH: WRITE action -> require-adobe-auth is TRUE in ext.config.yaml.
+// The Adobe platform validates the merchant's IMS token before this code runs.
+// An unauthenticated call never reaches here (401 at the platform layer).
 // ---------------------------------------------------------------------------
+
 async function main(params) {
   const logger = Core.Logger('save-rules', { level: params.LOG_LEVEL || 'info' });
+  const startMs = Date.now();
 
   try {
-    // Accept rules from JSON body (`rules`) or a stringified `rules` param.
     let incoming = params.rules;
     if (typeof incoming === 'string') {
       try { incoming = JSON.parse(incoming); } catch { incoming = null; }
@@ -27,20 +25,32 @@ async function main(params) {
       return { statusCode: 400, body: { error: 'Missing or invalid "rules" payload' } };
     }
 
-    // Normalize then validate before writing.
     const rules = migrateRules(incoming);
     const { valid, errors } = validateRules(rules);
     if (!valid) {
+      logger.warn(JSON.stringify({
+        action: 'save-rules', message: 'Validation failed',
+        errors, durationMs: Date.now() - startMs,
+        timestamp: new Date().toISOString(),
+      }));
       return { statusCode: 400, body: { error: 'Validation failed', errors } };
     }
 
     const state = await stateLib.init();
     await state.put('badge-rules', JSON.stringify(rules)); // no TTL: rules persist
 
-    logger.info('Saved badge-rules');
+    logger.info(JSON.stringify({
+      action: 'save-rules', message: 'Badge rules saved',
+      durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+    }));
+
     return { statusCode: 200, body: { rules, saved: true } };
   } catch (error) {
-    logger.error('save-rules failed:', error.message);
+    logger.error(JSON.stringify({
+      action: 'save-rules', message: 'Action failed',
+      error: error.message, durationMs: Date.now() - startMs,
+      timestamp: new Date().toISOString(),
+    }));
     return { statusCode: 500, body: { error: 'Internal server error', detail: error.message } };
   }
 }

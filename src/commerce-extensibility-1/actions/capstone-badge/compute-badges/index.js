@@ -5,15 +5,7 @@ const { DEFAULT_RULES, migrateRules, applyBadgeRules } = require('../lib/rules')
 // ---------------------------------------------------------------------------
 // Capstone: compute-badges
 // Reads a product from the Commerce API, applies the badge rules, and writes
-// the resulting badge state to I/O State under key `badge:<sku>`.
-//
-// Badge rules (final, per SESSION_CAPSTONE_PLAN.md):
-//   new        -> product created_at within `newWithinDays` (default 30)
-//   bestseller -> sku present in merchant-configured `bestsellerSkus[]`
-//   limited    -> active special_price within special_from/to_date window
-//
-// Rules are read from I/O State key `badge-rules`; if absent, DEFAULT_RULES
-// (from lib/rules) is used (editable via the Week 5 Admin UI Badge Rules page).
+// the resulting badge state to I/O State under key `badge_<sku>`.
 // ---------------------------------------------------------------------------
 
 const BADGE_STATE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
@@ -32,7 +24,6 @@ function normalizeImsTokenUrl(raw) {
   return u || fallback;
 }
 
-/** IMS expects `scope` as comma-separated names, not a JSON array string. */
 function scopeFormValue(scopesParam) {
   if (scopesParam == null) return '';
   const s = String(scopesParam).trim();
@@ -73,7 +64,6 @@ async function getImsAccessToken(params) {
   return cachedToken;
 }
 
-/** SaaS (ACCS) uses `/V1/products/{sku}`; on-prem Magento uses `/rest/{store}/V1/...`. */
 function catalogProductUrl(baseUrl, sku, p) {
   const b = String(baseUrl).replace(/\/$/, '');
   const encodedSku = encodeURIComponent(sku);
@@ -98,6 +88,7 @@ async function loadRules(state, logger) {
 
 async function main(params) {
   const logger = Core.Logger('compute-badges', { level: params.LOG_LEVEL || 'info' });
+  const startMs = Date.now();
 
   try {
     const { sku } = params;
@@ -113,7 +104,6 @@ async function main(params) {
     const accessToken = await getImsAccessToken(params);
     const productUrl = catalogProductUrl(baseUrl, sku, params);
 
-    logger.info(`Fetching product for badge computation: ${sku}`);
     const response = await fetch(productUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -124,7 +114,11 @@ async function main(params) {
     });
 
     if (!response.ok) {
-      logger.error(`Commerce API ${response.status} ${productUrl}`);
+      logger.error(JSON.stringify({
+        action: 'compute-badges', message: 'Commerce API error',
+        sku, status: response.status, url: productUrl,
+        durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+      }));
       return {
         statusCode: response.status,
         body: { error: `Commerce API error: ${response.statusText}`, url: productUrl },
@@ -132,7 +126,6 @@ async function main(params) {
     }
 
     const product = await response.json();
-
     const state = await stateLib.init();
     const rules = await loadRules(state, logger);
     const badges = applyBadgeRules(product, rules, sku);
@@ -140,10 +133,19 @@ async function main(params) {
     const value = { sku, badges, updatedAt: new Date().toISOString() };
     await state.put(`badge_${sku}`, JSON.stringify(value), { ttl: BADGE_STATE_TTL_SECONDS });
 
-    logger.info(`Computed badges for ${sku}: ${badges.join(', ') || '(none)'}`);
+    logger.info(JSON.stringify({
+      action: 'compute-badges', message: 'Badges computed',
+      sku, badges, badgeCount: badges.length,
+      durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+    }));
+
     return { statusCode: 200, body: value };
   } catch (error) {
-    logger.error('compute-badges failed:', error.message);
+    logger.error(JSON.stringify({
+      action: 'compute-badges', message: 'Action failed',
+      error: error.message, durationMs: Date.now() - startMs,
+      timestamp: new Date().toISOString(),
+    }));
     return { statusCode: 500, body: { error: 'Internal server error', detail: error.message } };
   }
 }

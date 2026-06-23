@@ -3,13 +3,14 @@ const stateLib = require('@adobe/aio-lib-state');
 
 // ---------------------------------------------------------------------------
 // Capstone: get-badges
-// Fast read of badge state for a SKU from I/O State (key `badge:<sku>`).
+// Fast read of badge state for a SKU from I/O State (key `badge_<sku>`).
 // Exposed through API Mesh as `Badges_getProductBadges(sku)` for the PDP.
 // Returns an empty badge list if the SKU has not been computed yet.
 // ---------------------------------------------------------------------------
 
 async function main(params) {
   const logger = Core.Logger('get-badges', { level: params.LOG_LEVEL || 'info' });
+  const startMs = Date.now();
 
   const { sku } = params;
   if (!sku) {
@@ -22,10 +23,18 @@ async function main(params) {
     try {
       res = await state.get(`badge_${sku}`);
     } catch (e) {
-      logger.info(`No badge state for ${sku}: ${e.message}`);
+      logger.info(JSON.stringify({
+        action: 'get-badges', message: 'No badge state found',
+        sku, error: e.message, durationMs: Date.now() - startMs,
+        timestamp: new Date().toISOString(),
+      }));
     }
 
     if (!res || !res.value) {
+      logger.info(JSON.stringify({
+        action: 'get-badges', message: 'Cache miss — returning empty badges',
+        sku, durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+      }));
       return { statusCode: 200, body: { sku, badges: [], updatedAt: null } };
     }
 
@@ -36,6 +45,12 @@ async function main(params) {
       parsed = { badges: [] };
     }
 
+    logger.info(JSON.stringify({
+      action: 'get-badges', message: 'Badges retrieved',
+      sku, badgeCount: (parsed.badges || []).length,
+      durationMs: Date.now() - startMs, timestamp: new Date().toISOString(),
+    }));
+
     return {
       statusCode: 200,
       body: {
@@ -45,7 +60,11 @@ async function main(params) {
       },
     };
   } catch (error) {
-    logger.error('get-badges failed:', error.message);
+    logger.error(JSON.stringify({
+      action: 'get-badges', message: 'Action failed',
+      sku, error: error.message, durationMs: Date.now() - startMs,
+      timestamp: new Date().toISOString(),
+    }));
     return { statusCode: 500, body: { error: 'Internal server error', detail: error.message } };
   }
 }

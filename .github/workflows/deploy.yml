@@ -1,0 +1,53 @@
+name: Deploy App Builder (Capstone)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install AIO CLI
+        run: npm install -g @adobe/aio-cli
+
+      - name: Create .env for deployment
+        env:
+          AIO_RUNTIME_NAMESPACE: ${{ secrets.AIO_RUNTIME_NAMESPACE }}
+          AIO_RUNTIME_AUTH: ${{ secrets.AIO_RUNTIME_AUTH }}
+          IMS_OAUTH_S2S_CLIENT_ID: ${{ secrets.IMS_OAUTH_S2S_CLIENT_ID }}
+          IMS_OAUTH_S2S_CLIENT_SECRET: ${{ secrets.IMS_OAUTH_S2S_CLIENT_SECRET }}
+          IMS_OAUTH_S2S_ORG_ID: ${{ secrets.IMS_OAUTH_S2S_ORG_ID }}
+          IMS_OAUTH_S2S_SCOPES: ${{ secrets.IMS_OAUTH_S2S_SCOPES }}
+          IMS_TOKEN_URL: ${{ secrets.IMS_TOKEN_URL }}
+          COMMERCE_API_BASE_URL: ${{ secrets.COMMERCE_API_BASE_URL }}
+          COMMERCE_STORE_CODE: ${{ secrets.COMMERCE_STORE_CODE }}
+        run: |
+          echo "AIO_runtime_namespace=$AIO_RUNTIME_NAMESPACE" >> .env
+          echo "AIO_runtime_auth=$AIO_RUNTIME_AUTH" >> .env
+          echo "IMS_OAUTH_S2S_CLIENT_ID=$IMS_OAUTH_S2S_CLIENT_ID" >> .env
+          echo "IMS_OAUTH_S2S_CLIENT_SECRET=$IMS_OAUTH_S2S_CLIENT_SECRET" >> .env
+          echo "IMS_OAUTH_S2S_ORG_ID=$IMS_OAUTH_S2S_ORG_ID" >> .env
+          echo "IMS_OAUTH_S2S_SCOPES=$IMS_OAUTH_S2S_SCOPES" >> .env
+          echo "IMS_TOKEN_URL=$IMS_TOKEN_URL" >> .env
+          echo "COMMERCE_API_BASE_URL=$COMMERCE_API_BASE_URL" >> .env
+          echo "COMMERCE_STORE_CODE=$COMMERCE_STORE_CODE" >> .env
+
+      - name: Deploy
+        run: aio app deploy
+
+      - name: Verify deployment
+        run: aio runtime action list
