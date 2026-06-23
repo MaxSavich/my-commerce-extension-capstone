@@ -46,8 +46,8 @@ runtimeManifest:
     capstone-badge:
       license: Apache-2.0
       actions:
-        compute-badges:
-          function: actions/capstone-badge/compute-badges/index.js
+        get-badges:
+          function: actions/capstone-badge/get-badges/index.js
           web: 'yes'
           runtime: nodejs:22
           inputs:
@@ -66,18 +66,6 @@ runtimeManifest:
             require-adobe-auth: false
             final: true
             include-ims-credentials: true
-        get-badges:
-          function: actions/capstone-badge/get-badges/index.js
-          web: 'yes'
-          runtime: nodejs:22
-          inputs:
-            LOG_LEVEL: info
-          limits:
-            timeout: 10000
-            memorySize: 256
-          annotations:
-            require-adobe-auth: false
-            final: true
         get-rules:
           function: actions/capstone-badge/get-rules/index.js
           web: 'yes'
@@ -88,7 +76,6 @@ runtimeManifest:
             timeout: 10000
             memorySize: 256
           annotations:
-            # READ action: no auth (same posture as course get-enriched-orders).
             require-adobe-auth: false
             final: true
         save-rules:
@@ -101,10 +88,6 @@ runtimeManifest:
             timeout: 10000
             memorySize: 256
           annotations:
-            # WRITE action: AUTH HAPPENS HERE. The Adobe platform validates the
-            # merchant IMS token BEFORE the action runs; unauthenticated calls
-            # get 401 and never reach save-rules. Flip to false only for local
-            # testing, then back to true (redeploy each time).
             require-adobe-auth: true
             final: true
         badge-event-consumer:
@@ -113,8 +96,6 @@ runtimeManifest:
           runtime: nodejs:22
           inputs:
             LOG_LEVEL: info
-            COMPUTE_BADGES_URL: $COMPUTE_BADGES_URL
-            GET_BADGES_URL: $GET_BADGES_URL
           limits:
             timeout: 30000
             memorySize: 256

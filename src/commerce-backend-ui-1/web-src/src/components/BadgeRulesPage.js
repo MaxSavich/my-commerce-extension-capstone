@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { attach } from '@adobe/uix-guest';
 import { extensionId } from './Constants';
 import {
@@ -20,105 +20,298 @@ import {
   Content,
   TagGroup,
   Item,
+  Picker,
+  ActionButton,
+  Dialog,
+  DialogTrigger,
+  Header,
+  Footer,
+  Checkbox,
 } from '@adobe/react-spectrum';
 
-// Capstone app namespace + package. get-rules is no-auth; save-rules requires
-// the merchant IMS token (sent below).
 const BASE = 'https://3967933-471blackyak-stage.adobeioruntime.net/api/v1/web/capstone-badge';
 const GET_RULES_URL = `${BASE}/get-rules`;
 const SAVE_RULES_URL = `${BASE}/save-rules`;
 
-// Client-side validation for instant feedback (the authoritative check still
-// runs server-side inside save-rules).
-function clientValidate(rules) {
+const TRIGGER_TYPES = [
+  { id: 'new',        name: 'New Arrival' },
+  { id: 'bestseller', name: 'Best Seller' },
+  { id: 'limited',    name: 'Limited Offer' },
+  { id: 'outofstock', name: 'Out of Stock' },
+  { id: 'lastone',    name: 'Last One' },
+  { id: 'lowstock',   name: 'Low Stock' },
+];
+
+const TYPE_DEFAULTS = {
+  new:        { label: 'New',          style: 'product_badge_new',     ttlDays: 30, withinDays: 30 },
+  bestseller: { label: 'Best Seller',  style: 'product_badge_default', ttlDays: 30, skus: [] },
+  limited:    { label: 'Limited Offer',style: 'product_badge_sale',    ttlDays: 7,  requireDateWindow: true },
+  outofstock: { label: 'Out of Stock', style: 'product_badge_stock',   ttlDays: 1 },
+  lastone:    { label: 'Last One',     style: 'product_badge_stock',   ttlDays: 1 },
+  lowstock:   { label: 'Low Stock',    style: 'product_badge_stock',   ttlDays: 3,  threshold: 10 },
+};
+
+function newBadgeInstance(type) {
+  const id = `${type}_${Date.now()}`;
+  return { id, type, enabled: true, ...TYPE_DEFAULTS[type] };
+}
+
+function clientValidate(badgeList) {
   const errors = [];
-  const b = rules.badges;
-  if (!Number.isInteger(b.new.withinDays) || b.new.withinDays <= 0) {
-    errors.push('New: "within days" must be a positive whole number.');
-  }
-  if (!Number.isInteger(b.lowstock.threshold) || b.lowstock.threshold <= 0) {
-    errors.push('Low Stock: "below quantity" must be a positive whole number.');
-  }
-  for (const t of ['new', 'bestseller', 'limited', 'outofstock', 'lastone', 'lowstock']) {
-    if (!b[t].label || !b[t].label.trim()) errors.push(`${t}: label cannot be empty.`);
+  const seenIds = new Set();
+  for (let i = 0; i < badgeList.length; i++) {
+    const b = badgeList[i];
+    const p = `Badge "${b.label || i}"`;
+    if (!b.label || !b.label.trim()) errors.push(`${p}: label cannot be empty.`);
+    if (!b.style || !b.style.trim()) errors.push(`${p}: style class cannot be empty.`);
+    if (!Number.isInteger(b.ttlDays) || b.ttlDays < 1) errors.push(`${p}: TTL must be a positive whole number.`);
+    if (seenIds.has(b.id)) errors.push(`${p}: duplicate id "${b.id}".`);
+    else seenIds.add(b.id);
+    if (b.type === 'new' && (!Number.isInteger(b.withinDays) || b.withinDays < 1))
+      errors.push(`${p}: "within days" must be a positive whole number.`);
+    if (b.type === 'lowstock' && (!Number.isInteger(b.threshold) || b.threshold < 2))
+      errors.push(`${p}: "low stock threshold" must be >= 2.`);
   }
   return errors;
 }
 
-export function BadgeRulesPage () {
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [rules, setRules] = useState(null);
-  const [error, setError] = useState(null);
-  const [saved, setSaved] = useState(false);
+// ---- Sub-component: type-specific fields ----
+function TypeFields({ badge, onChange }) {
+  const u = (field, val) => onChange({ ...badge, [field]: val });
+
+  if (badge.type === 'new') {
+    return (
+      <NumberField
+        label="New within (days)"
+        minValue={1}
+        value={badge.withinDays}
+        onChange={(v) => u('withinDays', v)}
+        width="size-1600"
+      />
+    );
+  }
+  if (badge.type === 'bestseller') {
+    return <SkuField badge={badge} onChange={onChange} />;
+  }
+  if (badge.type === 'limited') {
+    return (
+      <Checkbox
+        isSelected={badge.requireDateWindow}
+        onChange={(v) => u('requireDateWindow', v)}
+      >
+        Require active special-price date window
+      </Checkbox>
+    );
+  }
+  if (badge.type === 'lowstock') {
+    return (
+      <NumberField
+        label="Low when below (qty)"
+        minValue={2}
+        value={badge.threshold}
+        onChange={(v) => u('threshold', v)}
+        width="size-1600"
+      />
+    );
+  }
+  return null;
+}
+
+function SkuField({ badge, onChange }) {
   const [skuInput, setSkuInput] = useState('');
-
-  // Hold the guest connection so we can read the IMS token when saving.
-  const [guest, setGuest] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        // attach() gives us the Admin UI SDK shared context (IMS token, org).
-        const guestConnection = await attach({ id: extensionId });
-        setGuest(guestConnection);
-
-        // READ: get-rules is no-auth, so no token needed here.
-        const res = await fetch(GET_RULES_URL, {
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (!res.ok) throw new Error(`get-rules returned ${res.status}`);
-        const data = await res.json();
-        setRules(data.rules);
-      } catch (err) {
-        console.error('Failed to load badge rules:', err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, []);
-
-  const updateBadge = (type, field, value) => {
-    setSaved(false);
-    setRules((prev) => ({
-      ...prev,
-      badges: { ...prev.badges, [type]: { ...prev.badges[type], [field]: value } },
-    }));
-  };
 
   const addSku = () => {
     const sku = skuInput.trim();
     if (!sku) return;
-    const current = rules.badges.bestseller.skus;
-    if (!current.includes(sku)) updateBadge('bestseller', 'skus', [...current, sku]);
+    const skus = Array.isArray(badge.skus) ? badge.skus : [];
+    if (!skus.includes(sku)) onChange({ ...badge, skus: [...skus, sku] });
     setSkuInput('');
   };
 
   const removeSku = (keys) => {
     const toRemove = new Set(keys);
-    updateBadge('bestseller', 'skus', rules.badges.bestseller.skus.filter((s) => !toRemove.has(s)));
+    onChange({ ...badge, skus: badge.skus.filter((s) => !toRemove.has(s)) });
   };
+
+  return (
+    <View>
+      <Flex gap="size-200" alignItems="end">
+        <TextField
+          label="Add Best Seller SKU"
+          value={skuInput}
+          onChange={setSkuInput}
+          onKeyDown={(e) => { if (e.key === 'Enter') addSku(); }}
+          width="size-2400"
+        />
+        <Button variant="secondary" onPress={addSku}>Add</Button>
+      </Flex>
+      <View marginTop="size-100">
+        {(!badge.skus || badge.skus.length === 0) ? (
+          <Text>No SKUs configured.</Text>
+        ) : (
+          <TagGroup
+            aria-label="Best seller SKUs"
+            onRemove={removeSku}
+            items={badge.skus.map((s) => ({ id: s, name: s }))}
+          >
+            {(item) => <Item key={item.id}>{item.name}</Item>}
+          </TagGroup>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// ---- Sub-component: single badge card ----
+function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
+  const typeName = TRIGGER_TYPES.find((t) => t.id === badge.type)?.name || badge.type;
+
+  return (
+    <Well marginBottom="size-200">
+      <Flex gap="size-200" alignItems="center" marginBottom="size-200">
+        <Flex direction="column" gap="size-50">
+          <ActionButton
+            aria-label="Move up"
+            isDisabled={index === 0}
+            onPress={() => onMove(index, -1)}
+            isQuiet
+          >▲</ActionButton>
+          <ActionButton
+            aria-label="Move down"
+            isDisabled={index === total - 1}
+            onPress={() => onMove(index, 1)}
+            isQuiet
+          >▼</ActionButton>
+        </Flex>
+
+        <View flex>
+          <Flex alignItems="center" gap="size-200" marginBottom="size-200">
+            <Heading level={4} flex margin={0}>
+              {badge.label || '(no label)'} <Text UNSAFE_style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>— {typeName}</Text>
+            </Heading>
+            <Switch
+              isSelected={badge.enabled}
+              onChange={(v) => onChange({ ...badge, enabled: v })}
+            >
+              {badge.enabled ? 'Enabled' : 'Disabled'}
+            </Switch>
+          </Flex>
+
+          <Flex gap="size-300" wrap alignItems="end" marginBottom="size-200">
+            <TextField
+              label="Label"
+              value={badge.label}
+              onChange={(v) => onChange({ ...badge, label: v })}
+              width="size-2400"
+            />
+            <TextField
+              label="Style (CSS class)"
+              value={badge.style}
+              onChange={(v) => onChange({ ...badge, style: v })}
+              description="Full CSS class name — add matching rule to product-badges.css"
+              width="size-2400"
+            />
+            <NumberField
+              label="Cache TTL (days)"
+              minValue={1}
+              value={badge.ttlDays}
+              onChange={(v) => onChange({ ...badge, ttlDays: v })}
+              width="size-1600"
+            />
+          </Flex>
+
+          <TypeFields badge={badge} onChange={onChange} />
+        </View>
+
+        <DialogTrigger>
+          <ActionButton aria-label="Delete badge" isQuiet UNSAFE_style={{ color: '#c00' }}>✕</ActionButton>
+          {(close) => (
+            <Dialog>
+              <Header><Heading>Delete badge</Heading></Header>
+              <Content>
+                <Text>Delete "{badge.label}"? This cannot be undone until you save.</Text>
+              </Content>
+              <Footer>
+                <ButtonGroup>
+                  <Button variant="secondary" onPress={close}>Cancel</Button>
+                  <Button variant="negative" onPress={() => { onDelete(badge.id); close(); }}>Delete</Button>
+                </ButtonGroup>
+              </Footer>
+            </Dialog>
+          )}
+        </DialogTrigger>
+      </Flex>
+    </Well>
+  );
+}
+
+// ---- Main page component ----
+export function BadgeRulesPage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [badgeList, setBadgeList] = useState([]);
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [guest, setGuest] = useState(null);
+
+  // Add-badge dialog state
+  const [newType, setNewType] = useState('new');
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const guestConnection = await attach({ id: extensionId });
+        setGuest(guestConnection);
+        const res = await fetch(GET_RULES_URL, { headers: { 'Content-Type': 'application/json' } });
+        if (!res.ok) throw new Error(`get-rules returned ${res.status}`);
+        const data = await res.json();
+        setBadgeList(data.rules.badgeList || []);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const updateBadge = useCallback((updated) => {
+    setSaved(false);
+    setBadgeList((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+  }, []);
+
+  const deleteBadge = useCallback((id) => {
+    setSaved(false);
+    setBadgeList((prev) => prev.filter((b) => b.id !== id));
+  }, []);
+
+  const moveBadge = useCallback((index, direction) => {
+    setSaved(false);
+    setBadgeList((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }, []);
+
+  const addBadge = useCallback((type, close) => {
+    setSaved(false);
+    setBadgeList((prev) => [...prev, newBadgeInstance(type)]);
+    close();
+  }, []);
 
   const save = async () => {
     setError(null);
     setSaved(false);
-    const clientErrors = clientValidate(rules);
-    if (clientErrors.length) {
-      setError(clientErrors.join(' '));
-      return;
-    }
+    const clientErrors = clientValidate(badgeList);
+    if (clientErrors.length) { setError(clientErrors.join(' ')); return; }
     setSaving(true);
     try {
-      // === AUTH HAPPENS HERE ===
-      // save-rules is require-adobe-auth:true. Send the merchant IMS token from
-      // the Admin UI SDK shared context as a Bearer token + the org id header.
-      // The Adobe platform validates this token before the action runs.
       const ctx = guest?.sharedContext;
       const imsToken = ctx?.get('imsToken');
       const imsOrgId = ctx?.get('imsOrgId');
-
+      const rules = { version: 3, badgeList };
       const res = await fetch(SAVE_RULES_URL, {
         method: 'POST',
         headers: {
@@ -133,10 +326,9 @@ export function BadgeRulesPage () {
         const detail = data.errors ? data.errors.join(' ') : (data.error || `save-rules returned ${res.status}`);
         throw new Error(detail);
       }
-      setRules(data.rules);
+      setBadgeList(data.rules.badgeList || []);
       setSaved(true);
     } catch (err) {
-      console.error('Failed to save badge rules:', err);
       setError(err.message);
     } finally {
       setSaving(false);
@@ -156,7 +348,7 @@ export function BadgeRulesPage () {
     );
   }
 
-  if (!rules) {
+  if (!badgeList && error) {
     return (
       <Provider theme={defaultTheme} colorScheme="light">
         <View padding="size-400">
@@ -167,18 +359,47 @@ export function BadgeRulesPage () {
     );
   }
 
-  const b = rules.badges;
-
   return (
     <Provider theme={defaultTheme} colorScheme="light">
       <View padding="size-400">
-        <Heading level={1}>Badge Rules</Heading>
-        <Text>Configure how product badges are computed. Changes apply the next time a product is processed.</Text>
+        <Flex alignItems="center" gap="size-300" marginBottom="size-200">
+          <Heading level={1} flex margin={0}>Badge Rules</Heading>
+
+          <DialogTrigger>
+            <Button variant="cta">+ Add Badge</Button>
+            {(close) => (
+              <Dialog>
+                <Header><Heading>Add a new badge</Heading></Header>
+                <Content>
+                  <Text>Choose the trigger type. You can customise the label, style, and parameters after adding.</Text>
+                  <View marginTop="size-200">
+                    <Picker
+                      label="Trigger type"
+                      items={TRIGGER_TYPES}
+                      selectedKey={newType}
+                      onSelectionChange={setNewType}
+                    >
+                      {(item) => <Item key={item.id}>{item.name}</Item>}
+                    </Picker>
+                  </View>
+                </Content>
+                <Footer>
+                  <ButtonGroup>
+                    <Button variant="secondary" onPress={close}>Cancel</Button>
+                    <Button variant="cta" onPress={() => addBadge(newType, close)}>Add</Button>
+                  </ButtonGroup>
+                </Footer>
+              </Dialog>
+            )}
+          </DialogTrigger>
+        </Flex>
+
+        <Text>Configure how product badges are computed and displayed. Drag to reorder — order controls PDP display priority and stock-badge mutual exclusion.</Text>
 
         {error && (
           <View marginTop="size-200">
             <InlineAlert variant="negative">
-              <Heading>Could not save</Heading>
+              <Heading>Error</Heading>
               <Content>{error}</Content>
             </InlineAlert>
           </View>
@@ -187,128 +408,28 @@ export function BadgeRulesPage () {
           <View marginTop="size-200">
             <InlineAlert variant="positive">
               <Heading>Saved</Heading>
-              <Content>Badge rules updated.</Content>
+              <Content>Badge rules updated. Products will use the new rules on their next PDP visit.</Content>
             </InlineAlert>
           </View>
         )}
 
-        {/* NEW */}
-        <View marginTop="size-400">
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>New</Heading>
-            <Switch isSelected={b.new.enabled} onChange={(v) => updateBadge('new', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <Flex gap="size-300" wrap alignItems="end">
-            <TextField label="Label" value={b.new.label} onChange={(v) => updateBadge('new', 'label', v)} />
-            <NumberField
-              label="New within (days)"
-              minValue={1}
-              value={b.new.withinDays}
-              onChange={(v) => updateBadge('new', 'withinDays', v)}
+        <Divider size="S" marginY="size-300" />
+
+        {badgeList.length === 0 ? (
+          <Well><Text>No badges configured. Click "+ Add Badge" to create one.</Text></Well>
+        ) : (
+          badgeList.map((badge, i) => (
+            <BadgeCard
+              key={badge.id}
+              badge={badge}
+              index={i}
+              total={badgeList.length}
+              onChange={updateBadge}
+              onDelete={deleteBadge}
+              onMove={moveBadge}
             />
-          </Flex>
-        </View>
-
-        <Divider size="S" marginY="size-300" />
-
-        {/* BEST SELLER */}
-        <View>
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>Best Seller</Heading>
-            <Switch isSelected={b.bestseller.enabled} onChange={(v) => updateBadge('bestseller', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <TextField label="Label" value={b.bestseller.label} onChange={(v) => updateBadge('bestseller', 'label', v)} />
-          <View marginTop="size-200">
-            <Text>Best Seller SKUs</Text>
-            <Flex gap="size-200" alignItems="end" marginTop="size-100">
-              <TextField
-                label="Add SKU"
-                value={skuInput}
-                onChange={setSkuInput}
-                onKeyDown={(e) => { if (e.key === 'Enter') addSku(); }}
-              />
-              <Button variant="secondary" onPress={addSku}>Add</Button>
-            </Flex>
-            <View marginTop="size-200">
-              {b.bestseller.skus.length === 0 ? (
-                <Text>No SKUs configured.</Text>
-              ) : (
-                <TagGroup aria-label="Best seller SKUs" onRemove={removeSku} items={b.bestseller.skus.map((s) => ({ id: s, name: s }))}>
-                  {(item) => <Item key={item.id}>{item.name}</Item>}
-                </TagGroup>
-              )}
-            </View>
-          </View>
-        </View>
-
-        <Divider size="S" marginY="size-300" />
-
-        {/* LIMITED OFFER */}
-        <View>
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>Limited Offer</Heading>
-            <Switch isSelected={b.limited.enabled} onChange={(v) => updateBadge('limited', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <TextField label="Label" value={b.limited.label} onChange={(v) => updateBadge('limited', 'label', v)} />
-          <View marginTop="size-200">
-            <Switch
-              isSelected={b.limited.requireDateWindow}
-              onChange={(v) => updateBadge('limited', 'requireDateWindow', v)}
-            >
-              Require active special-price date window
-            </Switch>
-          </View>
-        </View>
-
-        <Divider size="S" marginY="size-300" />
-
-        {/* OUT OF STOCK */}
-        <View>
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>Out of Stock</Heading>
-            <Switch isSelected={b.outofstock.enabled} onChange={(v) => updateBadge('outofstock', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <TextField label="Label" value={b.outofstock.label} onChange={(v) => updateBadge('outofstock', 'label', v)} />
-          <View marginTop="size-100">
-            <Text>Shown when the product's inventory quantity is exactly 0.</Text>
-          </View>
-        </View>
-
-        <Divider size="S" marginY="size-300" />
-
-        {/* LAST ONE */}
-        <View>
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>Last One</Heading>
-            <Switch isSelected={b.lastone.enabled} onChange={(v) => updateBadge('lastone', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <TextField label="Label" value={b.lastone.label} onChange={(v) => updateBadge('lastone', 'label', v)} />
-          <View marginTop="size-100">
-            <Text>Shown when exactly 1 unit remains in stock.</Text>
-          </View>
-        </View>
-
-        <Divider size="S" marginY="size-300" />
-
-        {/* LOW STOCK */}
-        <View>
-          <Flex alignItems="center" gap="size-200">
-            <Heading level={3} flex>Low Stock</Heading>
-            <Switch isSelected={b.lowstock.enabled} onChange={(v) => updateBadge('lowstock', 'enabled', v)}>Enabled</Switch>
-          </Flex>
-          <Flex gap="size-300" wrap alignItems="end">
-            <TextField label="Label" value={b.lowstock.label} onChange={(v) => updateBadge('lowstock', 'label', v)} />
-            <NumberField
-              label="Low when below (qty)"
-              minValue={2}
-              value={b.lowstock.threshold}
-              onChange={(v) => updateBadge('lowstock', 'threshold', v)}
-            />
-          </Flex>
-          <View marginTop="size-100">
-            <Text>Shown when inventory is more than 1 but below this quantity. Out of Stock and Last One take priority.</Text>
-          </View>
-        </View>
+          ))
+        )}
 
         <Divider size="S" marginY="size-300" />
 
