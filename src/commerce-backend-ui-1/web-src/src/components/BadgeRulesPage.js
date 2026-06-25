@@ -1,4 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, {
+  useEffect, useState, useCallback, useRef,
+} from 'react';
 import { attach } from '@adobe/uix-guest';
 import { extensionId } from './Constants';
 import {
@@ -287,6 +289,13 @@ export function BadgeRulesPage() {
   const [saved, setSaved] = useState(false);
   const [guest, setGuest] = useState(null);
 
+  // Scroll anchors: top (for save-success / errors) and bottom (for + Add Badge).
+  const topRef = useRef(null);
+  const bottomRef = useRef(null);
+  // Set when the user clicks "+ Add Badge", so the next render scrolls to the
+  // newly appended (lowest) badge — but NOT on reorder/load/save.
+  const scrollToBottomNext = useRef(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -303,6 +312,28 @@ export function BadgeRulesPage() {
       }
     })();
   }, []);
+
+  // After a "+ Add Badge", scroll the new (bottom-most) badge into view.
+  useEffect(() => {
+    if (scrollToBottomNext.current && bottomRef.current) {
+      scrollToBottomNext.current = false;
+      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [badgeList]);
+
+  // On a successful save, scroll up so the merchant sees the success banner.
+  useEffect(() => {
+    if (saved && topRef.current) {
+      topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [saved]);
+
+  // On a validation/save error, scroll up so the merchant sees the error banner.
+  useEffect(() => {
+    if (error && topRef.current) {
+      topRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [error]);
 
   const updateBadge = useCallback((updated) => {
     setSaved(false);
@@ -327,6 +358,7 @@ export function BadgeRulesPage() {
 
   const addBadge = useCallback(() => {
     setSaved(false);
+    scrollToBottomNext.current = true; // trigger scroll-to-bottom on next render
     setBadgeList((prev) => [...prev, newBadgeInstance()]);
   }, []);
 
@@ -391,6 +423,8 @@ export function BadgeRulesPage() {
   return (
     <Provider theme={defaultTheme} colorScheme="light">
       <View padding="size-400">
+        {/* top scroll anchor (save success / error banners live just below) */}
+        <div ref={topRef} />
         <Flex alignItems="center" gap="size-300" marginBottom="size-200">
           <Heading level={1} flex margin={0}>Badge Rules</Heading>
           <Button variant="cta" onPress={addBadge}>+ Add Badge</Button>
@@ -438,6 +472,8 @@ export function BadgeRulesPage() {
         <ButtonGroup>
           <Button variant="cta" onPress={save} isPending={saving}>Save rules</Button>
         </ButtonGroup>
+        {/* bottom scroll anchor (+ Add Badge scrolls here) */}
+        <div ref={bottomRef} />
       </View>
     </Provider>
   );
