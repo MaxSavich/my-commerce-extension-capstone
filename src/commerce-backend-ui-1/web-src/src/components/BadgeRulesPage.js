@@ -18,7 +18,6 @@ import {
   Divider,
   InlineAlert,
   Content,
-  TagGroup,
   Item,
   Picker,
   ActionButton,
@@ -26,34 +25,62 @@ import {
   DialogTrigger,
   Header,
   Footer,
-  Checkbox,
 } from '@adobe/react-spectrum';
 
 const BASE = 'https://3967933-471blackyak-stage.adobeioruntime.net/api/v1/web/capstone-badge';
 const GET_RULES_URL = `${BASE}/get-rules`;
 const SAVE_RULES_URL = `${BASE}/save-rules`;
 
-const TRIGGER_TYPES = [
-  { id: 'new',        name: 'New Arrival' },
-  { id: 'bestseller', name: 'Best Seller' },
-  { id: 'limited',    name: 'Limited Offer' },
-  { id: 'outofstock', name: 'Out of Stock' },
-  { id: 'lastone',    name: 'Last One' },
-  { id: 'lowstock',   name: 'Low Stock' },
+// Operators offered in the condition builder (id = backend op).
+const CONDITION_OPS = [
+  { id: '>',                  name: 'greater than (>)' },
+  { id: '>=',                 name: 'at least (>=)' },
+  { id: '<',                  name: 'less than (<)' },
+  { id: '<=',                 name: 'at most (<=)' },
+  { id: '=',                  name: 'equals (=)' },
+  { id: '!=',                 name: 'not equal (!=)' },
+  { id: 'in',                 name: 'in list' },
+  { id: 'not_in',             name: 'not in list' },
+  { id: 'between',            name: 'between (min|max, numbers or dates)' },
+  { id: 'contains',           name: 'contains' },
+  { id: 'within_days',        name: 'within days (date)' },
+  { id: 'date_reached',       name: 'date reached (≤ now)' },
+  { id: 'date_not_passed',    name: 'date not passed (≥ now)' },
+  { id: 'date_window_active', name: 'date window active (Set as New)' },
 ];
 
-const TYPE_DEFAULTS = {
-  new:        { label: 'New',          style: 'product_badge_new',     ttlDays: 30, withinDays: 30 },
-  bestseller: { label: 'Best Seller',  style: 'product_badge_default', ttlDays: 30, skus: [] },
-  limited:    { label: 'Limited Offer',style: 'product_badge_sale',    ttlDays: 7,  requireDateWindow: true },
-  outofstock: { label: 'Out of Stock', style: 'product_badge_stock',   ttlDays: 1 },
-  lastone:    { label: 'Last One',     style: 'product_badge_stock',   ttlDays: 1 },
-  lowstock:   { label: 'Low Stock',    style: 'product_badge_stock',   ttlDays: 3,  threshold: 10 },
-};
+// Operators that need no value (value field is hidden).
+const VALUELESS_OPS = ['date_reached', 'date_not_passed', 'date_window_active'];
 
-function newBadgeInstance(type) {
-  const id = `${type}_${Date.now()}`;
-  return { id, type, enabled: true, ...TYPE_DEFAULTS[type] };
+// Per-operator placeholder hint for the value field.
+function placeholderFor(op) {
+  switch (op) {
+    case 'in':
+    case 'not_in':
+      return 'comma list, e.g. BPG-5005,HDP-1001';
+    case 'between':
+      return '100|200, 100|, |200, or 2026-01-01|2026-06-30';
+    case 'within_days':
+      return 'days, e.g. 30';
+    case 'contains':
+      return 'substring, e.g. steel';
+    default:
+      return 'e.g. 500, steel';
+  }
+}
+
+// A fresh blank badge — one starter condition the merchant edits.
+function newBadgeInstance() {
+  const id = `badge_${Date.now()}`;
+  return {
+    id,
+    enabled: true,
+    label: 'New Badge',
+    style: 'product_badge_default',
+    ttlDays: 7,
+    match: 'all',
+    conditions: [{ field: '', op: '=', value: '' }],
+  };
 }
 
 function clientValidate(badgeList) {
@@ -67,98 +94,113 @@ function clientValidate(badgeList) {
     if (!Number.isInteger(b.ttlDays) || b.ttlDays < 1) errors.push(`${p}: TTL must be a positive whole number.`);
     if (seenIds.has(b.id)) errors.push(`${p}: duplicate id "${b.id}".`);
     else seenIds.add(b.id);
-    if (b.type === 'new' && (!Number.isInteger(b.withinDays) || b.withinDays < 1))
-      errors.push(`${p}: "within days" must be a positive whole number.`);
-    if (b.type === 'lowstock' && (!Number.isInteger(b.threshold) || b.threshold < 2))
-      errors.push(`${p}: "low stock threshold" must be >= 2.`);
+    if (!Array.isArray(b.conditions) || b.conditions.length === 0) {
+      errors.push(`${p}: add at least one condition.`);
+    } else {
+      b.conditions.forEach((c, ci) => {
+        if (!c.field || !c.field.trim()) errors.push(`${p}: condition ${ci + 1} needs an attribute code.`);
+        // Valueless operators (date_reached/date_not_passed/date_window_active) need no value.
+        if (!VALUELESS_OPS.includes(c.op)
+            && (c.value === undefined || c.value === null || String(c.value).trim() === '')) {
+          errors.push(`${p}: condition ${ci + 1} needs a value.`);
+        }
+        // between needs a "|" range (numbers or dates) or a numeric "a-b".
+        if (c.op === 'between' && c.value
+            && !String(c.value).includes('|') && !String(c.value).includes('-')) {
+          errors.push(`${p}: condition ${ci + 1} "between" needs min|max (e.g. 100|200 or 2026-01-01|2026-06-30).`);
+        }
+      });
+    }
   }
   return errors;
 }
 
-// ---- Sub-component: type-specific fields (returns a field that joins the main row) ----
-function TypeFields({ badge, onChange }) {
-  const u = (field, val) => onChange({ ...badge, [field]: val });
+// ---- Sub-component: condition builder (the rule) ----
+function ConditionsEditor({ badge, onChange }) {
+  const conditions = Array.isArray(badge.conditions) ? badge.conditions : [];
+  const match = badge.match === 'any' ? 'any' : 'all';
 
-  if (badge.type === 'new') {
-    return (
-      <NumberField
-        label="New within (days)"
-        minValue={1}
-        value={badge.withinDays}
-        onChange={(v) => u('withinDays', v)}
-        width="size-1600"
-      />
-    );
-  }
-  if (badge.type === 'lowstock') {
-    return (
-      <NumberField
-        label="Low when below (qty)"
-        minValue={2}
-        value={badge.threshold}
-        onChange={(v) => u('threshold', v)}
-        width="size-1600"
-      />
-    );
-  }
-  if (badge.type === 'limited') {
-    return (
-      <View>
-        <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>Date window</Text>
-        <View marginTop="size-100">
-          <Checkbox
-            isSelected={badge.requireDateWindow}
-            onChange={(v) => u('requireDateWindow', v)}
-          >
-            Require active special price
-          </Checkbox>
-        </View>
-      </View>
-    );
-  }
-  return null;
-}
+  const setMatch = (m) => onChange({ ...badge, match: m });
 
-function SkuField({ badge, onChange }) {
-  const [skuInput, setSkuInput] = useState('');
-
-  const addSku = () => {
-    const sku = skuInput.trim();
-    if (!sku) return;
-    const skus = Array.isArray(badge.skus) ? badge.skus : [];
-    if (!skus.includes(sku)) onChange({ ...badge, skus: [...skus, sku] });
-    setSkuInput('');
+  const updateCondition = (idx, patch) => {
+    const next = conditions.map((c, i) => (i === idx ? { ...c, ...patch } : c));
+    onChange({ ...badge, conditions: next });
   };
 
-  const removeSku = (keys) => {
-    const toRemove = new Set(keys);
-    onChange({ ...badge, skus: badge.skus.filter((s) => !toRemove.has(s)) });
+  const addCondition = () => {
+    onChange({ ...badge, conditions: [...conditions, { field: '', op: '=', value: '' }] });
+  };
+
+  const removeCondition = (idx) => {
+    onChange({ ...badge, conditions: conditions.filter((_, i) => i !== idx) });
   };
 
   return (
     <View marginTop="size-200">
-      <Flex gap="size-200" alignItems="end">
-        <TextField
-          label="Add Best Seller SKU"
-          value={skuInput}
-          onChange={setSkuInput}
-          onKeyDown={(e) => { if (e.key === 'Enter') addSku(); }}
-          width="size-2400"
-        />
-        <Button variant="secondary" onPress={addSku}>Add</Button>
+      <Flex alignItems="center" gap="size-200" marginBottom="size-100">
+        <Text UNSAFE_style={{ fontWeight: 700 }}>Show this badge when</Text>
+        <Picker
+          aria-label="Match mode"
+          selectedKey={match}
+          onSelectionChange={setMatch}
+          width="size-1700"
+        >
+          <Item key="all">ALL conditions</Item>
+          <Item key="any">ANY condition</Item>
+        </Picker>
+        <Text>are true:</Text>
       </Flex>
+
+      {conditions.length === 0 && (
+        <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>No conditions yet — add one below.</Text>
+      )}
+
+      {conditions.map((c, idx) => {
+        const valueless = VALUELESS_OPS.includes(c.op);
+        return (
+          // eslint-disable-next-line react/no-array-index-key
+          <Flex key={idx} gap="size-150" alignItems="end" marginBottom="size-100" wrap>
+            <TextField
+              label={idx === 0 ? 'Attribute code' : undefined}
+              aria-label="Attribute code"
+              value={c.field}
+              onChange={(v) => updateCondition(idx, { field: v })}
+              placeholder="e.g. price, qty, created_at, news_from_date, sku"
+              width="size-2400"
+            />
+            <Picker
+              label={idx === 0 ? 'Operator' : undefined}
+              aria-label="Operator"
+              items={CONDITION_OPS}
+              selectedKey={c.op}
+              onSelectionChange={(k) => updateCondition(idx, { op: k })}
+              width="size-3400"
+            >
+              {(item) => <Item key={item.id}>{item.name}</Item>}
+            </Picker>
+            {valueless ? (
+              <View width="size-2400">
+                <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>
+                  {c.op === 'date_window_active' ? 'Checks news_from/news_to window' : 'No value needed'}
+                </Text>
+              </View>
+            ) : (
+              <TextField
+                label={idx === 0 ? 'Value' : undefined}
+                aria-label="Value"
+                value={String(c.value ?? '')}
+                onChange={(v) => updateCondition(idx, { value: v })}
+                placeholder={placeholderFor(c.op)}
+                width="size-2400"
+              />
+            )}
+            <ActionButton aria-label="Remove condition" onPress={() => removeCondition(idx)}>✕</ActionButton>
+          </Flex>
+        );
+      })}
+
       <View marginTop="size-100">
-        {(!badge.skus || badge.skus.length === 0) ? (
-          <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e' }}>No SKUs configured.</Text>
-        ) : (
-          <TagGroup
-            aria-label="Best seller SKUs"
-            onRemove={removeSku}
-            items={badge.skus.map((s) => ({ id: s, name: s }))}
-          >
-            {(item) => <Item key={item.id}>{item.name}</Item>}
-          </TagGroup>
-        )}
+        <Button variant="secondary" onPress={addCondition}>+ Add condition</Button>
       </View>
     </View>
   );
@@ -166,34 +208,18 @@ function SkuField({ badge, onChange }) {
 
 // ---- Sub-component: single badge card ----
 function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
-  const typeName = TRIGGER_TYPES.find((t) => t.id === badge.type)?.name || badge.type;
-
   return (
     <Well marginBottom="size-200">
-      {/* alignItems=start so the reorder arrows pin to the top, not float to vertical center */}
       <Flex gap="size-200" alignItems="start">
         <Flex direction="column" gap="size-50" marginTop="size-100">
-          <ActionButton
-            aria-label="Move up"
-            isDisabled={index === 0}
-            onPress={() => onMove(index, -1)}
-            isQuiet
-          >▲</ActionButton>
-          <ActionButton
-            aria-label="Move down"
-            isDisabled={index === total - 1}
-            onPress={() => onMove(index, 1)}
-            isQuiet
-          >▼</ActionButton>
+          <ActionButton aria-label="Move up" isDisabled={index === 0} onPress={() => onMove(index, -1)} isQuiet>▲</ActionButton>
+          <ActionButton aria-label="Move down" isDisabled={index === total - 1} onPress={() => onMove(index, 1)} isQuiet>▼</ActionButton>
         </Flex>
 
         <View flex>
           {/* Title row */}
           <Flex alignItems="center" gap="size-200" marginBottom="size-200">
-            <Heading level={4} flex margin={0}>
-              {badge.label || '(no label)'}{' '}
-              <Text UNSAFE_style={{ fontSize: 12, color: '#6e6e6e', fontWeight: 'normal' }}>— {typeName}</Text>
-            </Heading>
+            <Heading level={4} flex margin={0}>{badge.label || '(no label)'}</Heading>
             <Switch
               isSelected={badge.enabled}
               onChange={(v) => onChange({ ...badge, enabled: v })}
@@ -202,9 +228,7 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
             </Switch>
           </Flex>
 
-          {/* Field row: one grid, all fields share the same top baseline (alignItems=start).
-              The Style field's description hangs BELOW its input, so it no longer pushes
-              the other inputs down. Type-specific field joins the same row. */}
+          {/* Identity row: label / style / cache TTL */}
           <Flex gap="size-300" wrap alignItems="start">
             <TextField
               label="Label"
@@ -226,11 +250,10 @@ function BadgeCard({ badge, index, total, onChange, onDelete, onMove }) {
               onChange={(v) => onChange({ ...badge, ttlDays: v })}
               width="size-1600"
             />
-            <TypeFields badge={badge} onChange={onChange} />
           </Flex>
 
-          {/* Best-seller SKU manager is wider, so it gets its own row below */}
-          {badge.type === 'bestseller' && <SkuField badge={badge} onChange={onChange} />}
+          {/* The rule */}
+          <ConditionsEditor badge={badge} onChange={onChange} />
         </View>
 
         <DialogTrigger>
@@ -263,9 +286,6 @@ export function BadgeRulesPage() {
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
   const [guest, setGuest] = useState(null);
-
-  // Add-badge dialog state
-  const [newType, setNewType] = useState('new');
 
   useEffect(() => {
     (async () => {
@@ -305,10 +325,9 @@ export function BadgeRulesPage() {
     });
   }, []);
 
-  const addBadge = useCallback((type, close) => {
+  const addBadge = useCallback(() => {
     setSaved(false);
-    setBadgeList((prev) => [...prev, newBadgeInstance(type)]);
-    close();
+    setBadgeList((prev) => [...prev, newBadgeInstance()]);
   }, []);
 
   const save = async () => {
@@ -321,7 +340,7 @@ export function BadgeRulesPage() {
       const ctx = guest?.sharedContext;
       const imsToken = ctx?.get('imsToken');
       const imsOrgId = ctx?.get('imsOrgId');
-      const rules = { version: 3, badgeList };
+      const rules = { version: 4, badgeList };
       const res = await fetch(SAVE_RULES_URL, {
         method: 'POST',
         headers: {
@@ -374,37 +393,10 @@ export function BadgeRulesPage() {
       <View padding="size-400">
         <Flex alignItems="center" gap="size-300" marginBottom="size-200">
           <Heading level={1} flex margin={0}>Badge Rules</Heading>
-
-          <DialogTrigger>
-            <Button variant="cta">+ Add Badge</Button>
-            {(close) => (
-              <Dialog>
-                <Header><Heading>Add a new badge</Heading></Header>
-                <Content>
-                  <Text>Choose the trigger type. You can customise the label, style, and parameters after adding.</Text>
-                  <View marginTop="size-200">
-                    <Picker
-                      label="Trigger type"
-                      items={TRIGGER_TYPES}
-                      selectedKey={newType}
-                      onSelectionChange={setNewType}
-                    >
-                      {(item) => <Item key={item.id}>{item.name}</Item>}
-                    </Picker>
-                  </View>
-                </Content>
-                <Footer>
-                  <ButtonGroup>
-                    <Button variant="secondary" onPress={close}>Cancel</Button>
-                    <Button variant="cta" onPress={() => addBadge(newType, close)}>Add</Button>
-                  </ButtonGroup>
-                </Footer>
-              </Dialog>
-            )}
-          </DialogTrigger>
+          <Button variant="cta" onPress={addBadge}>+ Add Badge</Button>
         </Flex>
 
-        <Text>Configure how product badges are computed and displayed. Drag to reorder — order controls PDP display priority and stock-badge mutual exclusion.</Text>
+        <Text>Each badge is a rule: a label, a style, and one or more conditions on product attributes. Drag to reorder — order controls PDP display priority.</Text>
 
         {error && (
           <View marginTop="size-200">
