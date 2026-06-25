@@ -1,0 +1,50 @@
+name: CI — Build & Validate (Capstone)
+
+# Builds and validates the app on every push. NO secrets are used and NO
+# deployment happens here: deploys are run manually/locally with `aio app deploy`
+# where the local .env (gitignored) provides credentials. This keeps all
+# secrets off GitHub entirely.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax-check all action sources
+        run: |
+          echo "Running node --check on every action source file..."
+          status=0
+          while IFS= read -r -d '' f; do
+            if node --check "$f"; then
+              echo "  ok   $f"
+            else
+              echo "  FAIL $f"
+              status=1
+            fi
+          done < <(find src -type f -name '*.js' -not -path '*/.generated/*' -print0)
+          exit $status
+
+      - name: Deployment note
+        run: |
+          echo "Build & validation passed."
+          echo "Deployment is performed manually/locally with 'aio app deploy'."
+          echo "No secrets are stored in GitHub; credentials live only in the local .env."

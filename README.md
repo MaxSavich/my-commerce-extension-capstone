@@ -164,7 +164,9 @@ COMMERCE_API_BASE_URL=https://<your-accs-host>/<store-path>
 COMMERCE_STORE_CODE=default
 ```
 
-### Deploy
+### Deploy (manual / local)
+Deployment is run from a trusted local machine where `.env` provides the credentials —
+**no secrets are ever stored in GitHub** (see CI/CD below).
 ```bash
 npm install
 aio app deploy            # deploys the 4 runtime actions + Admin UI assets
@@ -195,10 +197,14 @@ Point the EDS storefront's badge block at the resulting mesh GraphQL endpoint.
 > org; verify via I/O State (`badge_<sku>`), the mesh response, or Debug Tracing.
 
 ### CI/CD
-`.github/workflows/deploy.yml` deploys on push to `main`. Add the environment values above
-as **GitHub repository secrets** (`AIO_RUNTIME_NAMESPACE`, `AIO_RUNTIME_AUTH`,
-`IMS_OAUTH_S2S_CLIENT_ID/SECRET/ORG_ID/SCOPES`, `IMS_TOKEN_URL`, `COMMERCE_API_BASE_URL`,
-`COMMERCE_STORE_CODE`).
+`.github/workflows/ci.yml` runs on every push / PR to `main`: it checks out, installs
+dependencies (`npm ci`), and syntax-checks every action source (`node --check`). It is a
+**build-and-validate pipeline only** — it deliberately does **not** deploy and uses
+**no secrets**, so no credentials are ever stored in GitHub. Deployment is performed
+manually/locally with `aio app deploy`, where the local `.env` (gitignored) supplies the
+credentials. This keeps all secrets off third-party CI infrastructure by design. (If a
+team later wants automated deploys, the recommended path is a self-hosted runner backed by
+the team's own secret store, not GitHub-stored secrets.)
 
 ---
 
@@ -227,7 +233,9 @@ as **GitHub repository secrets** (`AIO_RUNTIME_NAMESPACE`, `AIO_RUNTIME_AUTH`,
 ---
 
 ## Security & observability
-- Secrets live only in `.env` / `.aio` (gitignored); no credentials in source.
+- **No secrets in GitHub.** Credentials live only in the local `.env` / `.aio` (gitignored);
+  none are committed to source and none are stored as GitHub Actions secrets. CI is
+  build/validate only; deploys run locally.
 - `save-rules` requires Adobe IMS auth (`require-adobe-auth: true`); read/compute actions
   are intentionally open for the storefront.
 - CORS is left to the platform defaults for web actions (manual `Access-Control-*` headers
